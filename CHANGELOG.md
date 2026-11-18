@@ -6,6 +6,16 @@ and this project adheres to [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-11-18
+
+### Fixed
+- **Self-hosted Riffado did not detect the connector in Firefox.** Firefox's
+  `runtime.getManifest()` returns content-script paths as absolute
+  `moz-extension://…` URLs, and `scripting.registerContentScripts` rejects
+  them ("must be a relative URL"). The bridge was never registered on paired
+  origins, so `window.__riffadoConnector` was missing there. The background
+  now converts the paths to add-on-relative paths before it registers.
+
 ## [0.3.0] — 2026-11-18
 
 Firefox port. This fork (`nadelacruz-00/connector`) builds a Firefox add-on
