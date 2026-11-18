@@ -12,6 +12,12 @@
  */
 
 import {
+    hasRequiredHostAccess,
+    requestHostAccess,
+    requestOriginAccess,
+    revokeOriginAccess,
+} from "./lib/permissions";
+import {
     addPairedOrigin,
     getPairedOrigins,
     removePairedOrigin,
@@ -30,16 +36,10 @@ function normalize(input: string): string | null {
     }
 }
 
-async function requestHostPermission(origin: string): Promise<boolean> {
-    return chrome.permissions.request({ origins: [`${origin}/*`] });
-}
-
-async function revokeHostPermission(origin: string): Promise<void> {
-    try {
-        await chrome.permissions.remove({ origins: [`${origin}/*`] });
-    } catch {
-        // ignore
-    }
+async function renderHostAccessBanner(): Promise<void> {
+    const banner = document.getElementById("host-access") as HTMLElement | null;
+    if (!banner) return;
+    banner.hidden = await hasRequiredHostAccess();
 }
 
 function setStatus(message: string, kind: "ok" | "error" | "" = ""): void {
@@ -67,7 +67,7 @@ function render(origins: StoredOrigin[]): void {
         btn.type = "button";
         btn.textContent = "Remove";
         btn.addEventListener("click", async () => {
-            await revokeHostPermission(o.origin);
+            await revokeOriginAccess(o.origin);
             const next = await removePairedOrigin(o.origin);
             render(next);
         });
@@ -85,6 +85,14 @@ async function init(): Promise<void> {
             // Fallback in case tabs.create is somehow unavailable.
             window.open("https://riffado.com", "_blank", "noopener");
         });
+    });
+
+    const grantHost = document.getElementById(
+        "grant-host-access",
+    ) as HTMLButtonElement | null;
+    grantHost?.addEventListener("click", () => {
+        // Must run before any await (Firefox user-action rule).
+        void requestHostAccess().then(() => renderHostAccessBanner());
     });
 
     const form = document.getElementById("add-form") as HTMLFormElement;
@@ -110,7 +118,9 @@ async function init(): Promise<void> {
             return;
         }
 
-        const granted = await requestHostPermission(origin);
+        // Start the request synchronously: Firefox rejects
+        // permissions.request() after an await (user-action rule).
+        const granted = await requestOriginAccess(origin);
         if (!granted) {
             setStatus(
                 "Permission denied. The connector needs access to your Riffado origin to deliver the token.",
@@ -125,6 +135,7 @@ async function init(): Promise<void> {
     });
 
     render(await getPairedOrigins());
+    await renderHostAccessBanner();
 }
 
 void init();

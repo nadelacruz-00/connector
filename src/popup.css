@@ -1,7 +1,7 @@
 /*
  * Palette mirrors riffado's globals.css so the connector's surfaces
- * feel native to the app it bridges into. Values are OKLCH (Chrome 111+;
- * our manifest requires 114). Variable names kept stable so selectors
+ * feel native to the app it bridges into. Values are OKLCH (Firefox 113+;
+ * our manifest requires 140). Variable names kept stable so selectors
  * below don't need to change.
  */
 :root {
@@ -188,4 +188,27 @@ footer {
 footer .sep {
     color: var(--fg-muted);
     margin: 0 4px;
+}
+
+/* Shown when Firefox has no access to the plaud.ai hosts (revoked in
+   about:addons). */
+.banner {
+    border: 1px solid var(--accent);
+    border-radius: var(--radius);
+    background: color-mix(in oklch, var(--accent) 10%, var(--bg));
+    padding: 8px 10px;
+    margin: 0 0 10px;
+}
+.banner p {
+    margin: 0 0 6px;
+    font-size: 12px;
+}
+.banner[hidden] {
+    display: none;
+}
+
+button.grant {
+    border-color: var(--accent);
+    color: var(--accent);
+    margin-right: 4px;
 }

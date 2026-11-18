@@ -16,7 +16,7 @@
  *
  * Callers should:
  *   - feature-detect by checking `window.__riffadoConnector?.version`.
- *   - call connect() in response to a user gesture (Chrome blocks new-tab
+ *   - call connect() in response to a user gesture (browsers may block new-tab
  *     opens otherwise; the background opens web.plaud.ai via chrome.tabs).
  *   - POST the resolved payload to their own
  *     /api/plaud/auth/connect-token endpoint with credentials: 'include'.

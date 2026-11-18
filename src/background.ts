@@ -1,13 +1,13 @@
 /**
- * Service worker.
+ * Background (Firefox MV3 event page).
  *
  * Coordinates the bridge flow:
  *   1. content-bridge (running on the user's Riffado origin) sends
  *      `bridge:request-connect` when the user clicks "Continue with Plaud".
  *   2. We open https://web.plaud.ai in a new focused tab and remember which
  *      Riffado tab to send the result back to.
- *   3. We poll `chrome.cookies` directly for Plaud's `pld_ut` session
- *      cookie -- no content script runs on web.plaud.ai for this anymore
+ *   3. We watch `cookies.onChanged` and poll `cookies.get` for Plaud's
+ *      `pld_ut` session cookie -- no content script runs on web.plaud.ai for this anymore
  *      (see the file-header comment on the token-capture section below for
  *      why). Once a candidate value passes shape validation, we confirm it
  *      actually authenticates against Plaud before treating the connect as
@@ -18,6 +18,12 @@
  * Only one bridge request can be in flight at a time — starting a second
  * cancels the first. Keeps the model simple; the user is never juggling
  * two connect attempts.
+ *
+ * Firefox can suspend this event page while the user signs in to Plaud
+ * (about 30 s without extension events). In-memory state and `setTimeout`
+ * loops do not survive that, so the bridge state is mirrored to
+ * `storage.session`, and `cookies.onChanged` (an event, so it wakes the page)
+ * drives capture. When the page wakes with a live session, polling resumes.
  */
 
 import type {
@@ -29,21 +35,57 @@ import type {
 import { getPairedOrigins, ORIGINS_STORAGE_KEY } from "./lib/storage";
 
 interface BridgeState {
+    /** Unique per connect attempt; survives a suspend via storage.session. */
+    id: string;
     bridgeTabId: number;
     plaudTabId?: number;
+    /** Firefox container of the plaud.ai tab; undefined = default store. */
+    cookieStoreId?: string;
     startedAt: number;
 }
 
+const PENDING_STORAGE_KEY = "pendingBridge";
 let pending: BridgeState | null = null;
 const BRIDGE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
+function setPending(state: BridgeState): void {
+    pending = state;
+    chrome.storage.session
+        .set({ [PENDING_STORAGE_KEY]: state })
+        .catch((err) =>
+            console.warn("[riffado-connector] failed to persist bridge:", err),
+        );
+}
+
 function clearPending(): void {
     pending = null;
+    chrome.storage.session.remove(PENDING_STORAGE_KEY).catch(() => {});
+}
+
+/** In-memory state, or the state saved before the event page was suspended. */
+async function loadPending(): Promise<BridgeState | null> {
+    if (pending) return pending;
+    try {
+        const data = await chrome.storage.session.get(PENDING_STORAGE_KEY);
+        const saved = data[PENDING_STORAGE_KEY] as BridgeState | undefined;
+        // Another handler may have set `pending` while we awaited.
+        if (!pending && saved && typeof saved.id === "string") pending = saved;
+    } catch {
+        // storage.session unavailable; nothing to restore.
+    }
+    return pending;
+}
+
+function isCurrent(session: BridgeState): boolean {
+    return pending?.id === session.id;
 }
 
 function isStale(state: BridgeState): boolean {
     return Date.now() - state.startedAt > BRIDGE_TTL_MS;
 }
+
+// Firefox-only fields that @types/chrome does not declare.
+type FirefoxTab = chrome.tabs.Tab & { cookieStoreId?: string };
 
 // ---------------------------------------------------------------------------
 // Dynamic bridge registration for paired self-hosted origins.
@@ -194,8 +236,18 @@ chrome.storage.onChanged.addListener((changes, area) => {
     );
 });
 
+// Firefox: the popup can close while the permission prompt is open, so the
+// popup's own follow-up never runs. And the user can grant or revoke host
+// access in about:addons. Re-sync on every host-permission change.
+chrome.permissions.onAdded.addListener(() => {
+    void syncPairedContentScripts();
+});
+chrome.permissions.onRemoved.addListener(() => {
+    void syncPairedContentScripts();
+});
+
 // ---------------------------------------------------------------------------
-// Token capture via chrome.cookies.
+// Token capture via the cookies API.
 //
 // Plaud's web app authenticates web.plaud.ai with a `pld_ut` cookie carrying
 // the long-lived user token (UT) -- and that cookie is HttpOnly. No page
@@ -217,7 +269,7 @@ const PLAUD_UT_COOKIE_NAME = "pld_ut";
 const TOKEN_POLL_INTERVAL_MS = 750;
 const TOKEN_POLL_TIMEOUT_MS = 90_000;
 // If the same candidate token fails verification, don't hammer
-// chrome.cookies/Plaud on every 750ms tick -- wait this long before
+// the cookies API/Plaud on every 750ms tick -- wait this long before
 // re-attempting the unchanged value.
 const RETRY_UNCHANGED_MS = 3_000;
 
@@ -234,7 +286,7 @@ function base64UrlDecode(segment: string): string | null {
     try {
         const b64 = segment.replace(/-/g, "+").replace(/_/g, "/");
         const padded = b64 + "=".repeat((4 - (b64.length % 4)) % 4);
-        // atob is available in MV3 service workers.
+        // atob is available in the background page.
         return atob(padded);
     } catch {
         return null;
@@ -329,79 +381,164 @@ function resolveApiBaseFromToken(token: string): {
     return { apiBase: "https://api.plaud.ai", region: "global" };
 }
 
-async function getPlaudUtCookie(): Promise<string | null> {
+async function getPlaudUtCookie(storeId?: string): Promise<string | null> {
     try {
-        const cookie = await chrome.cookies.get({
+        const details: chrome.cookies.CookieDetails = {
             url: PLAUD_UT_COOKIE_URL,
             name: PLAUD_UT_COOKIE_NAME,
-        });
+        };
+        // Read from the container the plaud.ai tab runs in. Without a
+        // storeId Firefox reads the default container only.
+        if (storeId) details.storeId = storeId;
+        const cookie = await chrome.cookies.get(details);
         return cookie?.value ?? null;
     } catch (err) {
-        console.warn("[riffado-connector] chrome.cookies.get failed:", err);
+        console.warn("[riffado-connector] cookies.get failed:", err);
         return null;
     }
 }
 
+/**
+ * Open web.plaud.ai in the same Firefox container as the Riffado tab, so a
+ * user who keeps Plaud signed in inside a container gets that session. Falls
+ * back to the default container if Firefox refuses (for example a private
+ * window store used from a normal window).
+ */
+async function openPlaudTab(bridgeTabId: number): Promise<FirefoxTab> {
+    let cookieStoreId: string | undefined;
+    try {
+        const bridgeTab = (await chrome.tabs.get(bridgeTabId)) as FirefoxTab;
+        cookieStoreId = bridgeTab.cookieStoreId;
+    } catch {
+        // Bridge tab gone; open in the default container.
+    }
+    const props: chrome.tabs.CreateProperties & { cookieStoreId?: string } = {
+        url: "https://web.plaud.ai/",
+        active: true,
+    };
+    if (cookieStoreId) {
+        try {
+            return (await chrome.tabs.create({
+                ...props,
+                cookieStoreId,
+            } as chrome.tabs.CreateProperties)) as FirefoxTab;
+        } catch (err) {
+            console.warn(
+                "[riffado-connector] could not open Plaud in the Riffado tab's container:",
+                err,
+            );
+        }
+    }
+    return (await chrome.tabs.create(props)) as FirefoxTab;
+}
+
+// Retry bookkeeping for the current session, shared by the poll loop and the
+// cookies.onChanged listener so they never verify the same unchanged value
+// back to back or deliver twice.
+let lastAttempted: string | null = null;
+let lastAttemptAt = 0;
+let attemptInFlight = false;
+let pollingSessionId: string | null = null;
+
 async function startBridge(bridgeTabId: number): Promise<void> {
     // Cancel any prior bridge request — we only support one at a time.
-    if (pending) {
+    const prior = await loadPending();
+    if (prior?.plaudTabId !== undefined) {
         try {
-            if (pending.plaudTabId !== undefined) {
-                await chrome.tabs.remove(pending.plaudTabId);
-            }
+            await chrome.tabs.remove(prior.plaudTabId);
         } catch {
             // Tab may already be gone. Ignore.
         }
     }
 
-    const tab = await chrome.tabs.create({
-        url: "https://web.plaud.ai/",
-        active: true,
-    });
+    const tab = await openPlaudTab(bridgeTabId);
 
     const session: BridgeState = {
+        id: crypto.randomUUID(),
         bridgeTabId,
         plaudTabId: tab.id,
+        cookieStoreId: tab.cookieStoreId,
         startedAt: Date.now(),
     };
-    pending = session;
+    lastAttempted = null;
+    lastAttemptAt = 0;
+    setPending(session);
 
     void pollForToken(session);
 }
 
-async function pollForToken(session: BridgeState): Promise<void> {
-    const deadline = session.startedAt + TOKEN_POLL_TIMEOUT_MS;
-    let lastAttempted: string | null = null;
-    let lastAttemptAt = 0;
+/**
+ * Verify and deliver one candidate token. Returns true when the session is
+ * done (token delivered).
+ */
+async function tryToken(
+    session: BridgeState,
+    token: string,
+): Promise<boolean> {
+    if (!looksLikeJwt(token) || attemptInFlight) return false;
+    const changed = token !== lastAttempted;
+    const dueForRetry = Date.now() - lastAttemptAt > RETRY_UNCHANGED_MS;
+    if (!changed && !dueForRetry) return false;
 
-    while (Date.now() < deadline) {
-        // This attempt was superseded by a new startBridge() / cancelled.
-        if (pending !== session) return;
-
-        const token = await getPlaudUtCookie();
-        if (token && looksLikeJwt(token)) {
-            const changed = token !== lastAttempted;
-            const dueForRetry = Date.now() - lastAttemptAt > RETRY_UNCHANGED_MS;
-            if (changed || dueForRetry) {
-                lastAttempted = token;
-                lastAttemptAt = Date.now();
-                const { apiBase, region } = resolveApiBaseFromToken(token);
-                const payload: ConnectorTokenPayload = {
-                    accessToken: token,
-                    apiBase,
-                    region,
-                    capturedAt: Date.now(),
-                };
-                if (await deliverTokenToBridge(session, payload)) return;
-            }
-        }
-
-        await new Promise((r) => setTimeout(r, TOKEN_POLL_INTERVAL_MS));
+    attemptInFlight = true;
+    lastAttempted = token;
+    lastAttemptAt = Date.now();
+    try {
+        const { apiBase, region } = resolveApiBaseFromToken(token);
+        const payload: ConnectorTokenPayload = {
+            accessToken: token,
+            apiBase,
+            region,
+            capturedAt: Date.now(),
+        };
+        return await deliverTokenToBridge(session, payload);
+    } finally {
+        attemptInFlight = false;
     }
-    console.debug(
-        "[riffado-connector] timed out waiting for a verified Plaud session",
-    );
 }
+
+async function pollForToken(session: BridgeState): Promise<void> {
+    if (pollingSessionId === session.id) return; // already polling this one
+    pollingSessionId = session.id;
+    try {
+        const deadline = session.startedAt + TOKEN_POLL_TIMEOUT_MS;
+        while (Date.now() < deadline) {
+            // This attempt was superseded by a new startBridge() / cancelled.
+            if (!isCurrent(session)) return;
+
+            const token = await getPlaudUtCookie(session.cookieStoreId);
+            if (token && (await tryToken(session, token))) return;
+
+            await new Promise((r) => setTimeout(r, TOKEN_POLL_INTERVAL_MS));
+        }
+        console.debug(
+            "[riffado-connector] poll timed out; still listening for cookie changes",
+        );
+    } finally {
+        if (pollingSessionId === session.id) pollingSessionId = null;
+    }
+}
+
+// Event-driven capture. Unlike the poll loop, this listener survives an
+// event-page suspend: Firefox wakes the page to deliver the event.
+chrome.cookies.onChanged.addListener(({ cookie, removed }) => {
+    if (removed || cookie.name !== PLAUD_UT_COOKIE_NAME) return;
+    if (!/(^|\.)plaud\.ai$/.test(cookie.domain.replace(/^\./, ""))) return;
+    void (async () => {
+        const session = await loadPending();
+        if (!session) return;
+        if (isStale(session)) {
+            clearPending();
+            return;
+        }
+        if (session.cookieStoreId && cookie.storeId !== session.cookieStoreId) {
+            return; // a different container's Plaud login
+        }
+        if (await tryToken(session, cookie.value)) return;
+        // Not verified yet: make sure the poll runs again after a wake-up.
+        void pollForToken(session);
+    })();
+});
 
 /**
  * Confirm a captured token actually authenticates against Plaud before we
@@ -411,7 +548,7 @@ async function pollForToken(session: BridgeState): Promise<void> {
  * to validate a freshly connected token, so "verified here" and "verified
  * server-side" agree (confirmed by directly comparing responses: a real
  * token succeeds against this endpoint regardless of request Origin, so
- * there's no CORS/origin obstacle to calling it from the service worker).
+ * there's no CORS/origin obstacle to calling it from the background).
  * `apiBase` is constrained to the hosts covered by `host_permissions` (see
  * `isPermittedApiHost`), which this function double-checks before fetching.
  */
@@ -486,9 +623,9 @@ async function deliverTokenToBridge(
     session: BridgeState,
     payload: ConnectorTokenPayload,
 ): Promise<boolean> {
-    if (pending !== session) return false;
+    if (!isCurrent(session)) return false;
     if (isStale(session)) {
-        if (pending === session) clearPending();
+        clearPending();
         return false;
     }
 
@@ -498,7 +635,7 @@ async function deliverTokenToBridge(
     // The session was replaced or cancelled while we were verifying. This
     // capture no longer belongs to the active attempt; drop it silently
     // rather than acting on state that isn't ours.
-    if (pending !== session) return false;
+    if (!isCurrent(session)) return false;
 
     const { bridgeTabId, plaudTabId } = session;
 
@@ -553,14 +690,13 @@ chrome.runtime.onMessage.addListener(
         }
 
         if (msg.type === "bridge:cancel") {
-            if (pending?.plaudTabId !== undefined) {
-                chrome.tabs
-                    .remove(pending.plaudTabId)
-                    .catch(() => {})
-                    .finally(() => clearPending());
-            } else {
+            void loadPending().then((session) => {
+                const plaudTabId = session?.plaudTabId;
                 clearPending();
-            }
+                if (plaudTabId !== undefined) {
+                    chrome.tabs.remove(plaudTabId).catch(() => {});
+                }
+            });
             sendResponse({ ok: true });
             return false;
         }
@@ -569,11 +705,20 @@ chrome.runtime.onMessage.addListener(
     },
 );
 
-// Garbage-collect stale pending state on startup (service workers can wake
-// up after a long sleep). Also reconcile bridge registrations in case the
-// paired-origins list changed while the worker was asleep.
+// Runs every time Firefox (re)starts this event page, including a wake-up in
+// the middle of a connect attempt: drop a stale session or resume polling.
+void loadPending().then((session) => {
+    if (!session) return;
+    if (isStale(session)) {
+        clearPending();
+        return;
+    }
+    void pollForToken(session);
+});
+
+// Reconcile bridge registrations in case the paired-origins list changed
+// while the browser was closed.
 chrome.runtime.onStartup.addListener(() => {
-    if (pending && isStale(pending)) clearPending();
     void syncPairedContentScripts();
 });
 
