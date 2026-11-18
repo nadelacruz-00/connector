@@ -1,25 +1,29 @@
 {
     "name": "riffado-connector",
-    "version": "0.2.3",
-    "description": "Browser extension that bridges your Plaud session to Riffado (self-hosted or hosted).",
+    "version": "0.3.0",
+    "description": "Firefox add-on that bridges your Plaud session to Riffado (self-hosted or hosted).",
     "private": true,
     "license": "AGPL-3.0",
     "repository": {
         "type": "git",
-        "url": "https://github.com/riffado/connector.git"
+        "url": "https://github.com/nadelacruz-00/connector.git"
     },
-    "homepage": "https://github.com/riffado/connector#readme",
+    "homepage": "https://github.com/nadelacruz-00/connector#readme",
     "scripts": {
         "dev": "vite",
         "build": "tsc --noEmit && vite build",
         "type-check": "tsc --noEmit",
-        "zip": "mkdir -p dist-zip && cd dist && zip -r ../dist-zip/riffado-connector-$npm_package_version.zip . && cd ..",
-        "release": "pnpm build && pnpm zip"
+        "lint:ext": "web-ext lint --source-dir dist",
+        "start": "web-ext run --source-dir dist",
+        "zip": "web-ext build --source-dir dist --artifacts-dir dist-zip --filename riffado-connector-{version}.zip --overwrite-dest",
+        "sign": "web-ext sign --source-dir dist --artifacts-dir web-ext-artifacts --channel unlisted",
+        "release": "pnpm build && pnpm lint:ext && pnpm zip"
     },
     "devDependencies": {
-        "@crxjs/vite-plugin": "^2.2.0",
+        "@crxjs/vite-plugin": "^3.0.0",
         "@types/chrome": "^0.0.287",
         "typescript": "^5.7.2",
-        "vite": "^6.0.7"
+        "vite": "^6.0.7",
+        "web-ext": "^10.8.0"
     }
 }

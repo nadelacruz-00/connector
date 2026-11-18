@@ -1,13 +1,13 @@
 /**
- * Wire format for messages between content scripts, the background service
- * worker, and the page-world bridge. Each direction is annotated; keep this
+ * Wire format for messages between content scripts, the background event
+ * page, and the page-world bridge. Each direction is annotated; keep this
  * file the single source of truth so refactors don't drift.
  *
  *   page-bridge (page world)
  *      → window.postMessage  →  content-bridge (isolated world)
  *      → chrome.runtime      →  background
  *
- *   background (polls chrome.cookies for Plaud's pld_ut cookie directly --
+ *   background (watches the cookies API for Plaud's pld_ut cookie directly --
  *   no content script runs on web.plaud.ai; that cookie is HttpOnly and no
  *   page JavaScript can ever read it)
  *      → chrome.tabs         →  content-bridge

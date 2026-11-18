@@ -6,6 +6,41 @@ and this project adheres to [SemVer](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-11-18
+
+Firefox port. This fork (`nadelacruz-00/connector`) builds a Firefox add-on
+instead of a Chrome extension. The page protocol
+(`window.__riffadoConnector`, version 1) does not change.
+
+### Changed
+- **Firefox MV3 build.** `@crxjs/vite-plugin` 3 with `browser: "firefox"`;
+  the background is an event page (`background.scripts`) instead of a
+  service worker. The manifest adds `browser_specific_settings.gecko`
+  (id `riffado-connector@nadelacruz-00.github.io`, Firefox 140+) and
+  declares `data_collection_permissions: authenticationInfo`.
+- **Capture survives event-page suspends.** The connect attempt is saved in
+  `storage.session`, `cookies.onChanged` drives capture (it wakes the
+  page), and the poll resumes when the page wakes.
+- **Firefox containers.** The Plaud tab opens in the Riffado tab's
+  container, and the `pld_ut` cookie is read from that container's store.
+- **Packaging.** `web-ext` replaces the zip script: `pnpm start`,
+  `pnpm lint:ext`, `pnpm zip`, `pnpm sign`. The release workflow signs the
+  add-on through AMO (unlisted) and attaches the signed `.xpi`.
+
+### Added
+- **Grant access button.** The popup and welcome page detect when the
+  `plaud.ai` host permissions were turned off in `about:addons` and offer
+  to grant them again. Paired origins without permission show their own
+  **Grant access** button.
+- The background re-syncs bridge registrations on
+  `permissions.onAdded` / `onRemoved`. In Firefox the permission prompt can
+  close the popup, so the popup now saves the origin before it asks.
+- Add-on icons (16–128 px).
+
+### Removed
+- Chrome Web Store listing copy (`STORE_LISTING.md`, `docs/store/`).
+  AMO signing notes are in `docs/amo/README.md`.
+
 ## [0.2.3] — 2026-07-22
 
 ### Changed

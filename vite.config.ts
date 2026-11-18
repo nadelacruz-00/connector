@@ -3,7 +3,7 @@ import { defineConfig } from "vite";
 import manifest from "./src/manifest";
 
 export default defineConfig({
-    plugins: [crx({ manifest })],
+    plugins: [crx({ manifest, browser: "firefox" })],
     build: {
         rollupOptions: {
             // The page-world bridge is injected via a <script> tag at runtime

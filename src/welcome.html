@@ -17,6 +17,16 @@
                 </p>
             </header>
 
+            <div id="host-access" class="banner" role="alert" hidden>
+                <p>
+                    Firefox has no access to <code>plaud.ai</code>, so the
+                    connector cannot read your Plaud session.
+                </p>
+                <button id="grant-host-access" type="button" class="primary">
+                    Grant access
+                </button>
+            </div>
+
             <ol class="steps">
                 <li>
                     <div class="step-num">1</div>
@@ -50,7 +60,7 @@
                         <h2>Click "Continue with Plaud"</h2>
                         <p>
                             On the Riffado connect screen you'll see a
-                            <b>Continue with Plaud</b> button. The extension
+                            <b>Continue with Plaud</b> button. The add-on
                             adds it automatically — you don't need to enable
                             anything.
                         </p>
@@ -65,9 +75,11 @@
                             A new tab opens at
                             <code>web.plaud.ai</code>. Sign in with Google,
                             Apple, or email — whatever you already use. The
-                            extension never sees your password. Once Plaud has
+                            add-on never sees your password. Once Plaud has
                             you logged in, the tab closes automatically and
-                            Riffado takes over.
+                            Riffado takes over. If you use Firefox containers,
+                            the Plaud tab opens in the same container as your
+                            Riffado tab.
                         </p>
                     </div>
                 </li>
@@ -108,10 +120,10 @@
                     >
                     &middot; Source &amp; security model:
                     <a
-                        href="https://github.com/riffado/connector"
+                        href="https://github.com/nadelacruz-00/connector"
                         target="_blank"
                         rel="noopener"
-                        >github.com/riffado/connector</a
+                        >github.com/nadelacruz-00/connector</a
                     >
                 </p>
             </footer>

@@ -2,7 +2,15 @@ import { defineManifest } from "@crxjs/vite-plugin";
 import pkg from "../package.json";
 
 /**
- * MV3 manifest.
+ * MV3 manifest (Firefox).
+ *
+ * Firefox runs MV3 backgrounds as an event page (`background.scripts`), not
+ * a service worker. `browser_specific_settings.gecko` sets the add-on id
+ * (needed for AMO signing and for storage to survive reinstalls) and the
+ * minimum version: 140 (ESR) is the first release that supports
+ * `data_collection_permissions` (Firefox built-in data consent), and it
+ * has every MV3 API used here (`scripting.registerContentScripts`,
+ * `storage.session`, `cookies.get({ storeId })` for container tabs).
  *
  * Permission posture (kept minimal on purpose; the README's security section
  * explains each entry):
@@ -25,7 +33,7 @@ import pkg from "../package.json";
  *       - cookies  — read Plaud's `pld_ut` session cookie, which carries
  *                    the long-lived user token. That cookie is HttpOnly,
  *                    so no page JavaScript (including a content script)
- *                    can ever read it via `document.cookie`; `chrome.cookies`
+ *                    can ever read it via `document.cookie`; `cookies`
  *                    is the only way to obtain its value, and it's the
  *                    intended API for exactly this kind of session
  *                    handoff. Scoped by the plaud.ai `host_permissions`
@@ -40,25 +48,43 @@ export default defineManifest({
     description: pkg.description,
     version: pkg.version,
     homepage_url: pkg.homepage,
-    minimum_chrome_version: "114",
-    // BLOCKS CWS SUBMISSION: ship 16/32/48/128 PNGs in src/icons/ and wire
-    // them up via `icons` and `action.default_icon` before submitting to
-    // the Chrome Web Store. Sideload + GitHub release zips work without
-    // them — Chrome falls back to the default puzzle-piece icon.
+    icons: {
+        16: "icons/icon-16.png",
+        32: "icons/icon-32.png",
+        48: "icons/icon-48.png",
+        96: "icons/icon-96.png",
+        128: "icons/icon-128.png",
+    },
     action: {
         default_popup: "src/popup.html",
         default_title: "Riffado Connector",
+        default_icon: {
+            16: "icons/icon-16.png",
+            32: "icons/icon-32.png",
+        },
     },
     background: {
-        service_worker: "src/background.ts",
+        scripts: ["src/background.ts"],
         type: "module",
     },
-    // `scripting` lets the service worker register the bridge content script
+    browser_specific_settings: {
+        gecko: {
+            id: "riffado-connector@nadelacruz-00.github.io",
+            strict_min_version: "140.0",
+            // The add-on reads the user's Plaud session token and hands it to
+            // the user's own Riffado page. AMO requires this declaration for
+            // new add-ons (Firefox built-in data consent).
+            data_collection_permissions: {
+                required: ["authenticationInfo"],
+            },
+        },
+    },
+    // `scripting` lets the background register the bridge content script
     // for self-hosted origins the user pairs at runtime (see background.ts).
     // The statically-declared bridge below only covers the hosted origin;
     // granting a host permission alone never starts a declared content script
     // on a new origin, so paired instances need explicit registration.
-    // `cookies` lets the service worker read Plaud's HttpOnly `pld_ut`
+    // `cookies` lets the background read Plaud's HttpOnly `pld_ut`
     // session cookie directly -- see the file-header comment above.
     permissions: ["storage", "tabs", "scripting", "cookies"],
     host_permissions: [
@@ -73,8 +99,8 @@ export default defineManifest({
     // those origins on demand via the popup, so both schemes are allowed here.
     optional_host_permissions: ["https://*/*", "http://*/*"],
     // No content script runs on web.plaud.ai anymore -- token capture reads
-    // the pld_ut cookie directly from the background service worker via
-    // chrome.cookies (see background.ts), which is the only thing that can
+    // the pld_ut cookie directly from the background event page via
+    // the cookies API (see background.ts), which is the only thing that can
     // read an HttpOnly cookie's value at all.
     content_scripts: [
         {

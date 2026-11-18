@@ -18,12 +18,12 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 9
+          version: 11
 
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: pnpm
 
       - name: Install dependencies
@@ -35,22 +35,38 @@ jobs:
       - name: Build
         run: pnpm build
 
-      - name: Zip
-        run: pnpm zip
+      - name: Lint (web-ext, same checks as AMO)
+        run: pnpm lint:ext
+
+      # Signs dist/ as an unlisted (self-distributed) add-on. AMO keeps the
+      # add-on off the public listing but returns a Mozilla-signed .xpi that
+      # installs in normal Firefox. Needs repository secrets AMO_JWT_ISSUER and
+      # AMO_JWT_SECRET (https://addons.mozilla.org/developers/addon/api/key/).
+      - name: Sign with AMO (unlisted)
+        env:
+          WEB_EXT_API_KEY: ${{ secrets.AMO_JWT_ISSUER }}
+          WEB_EXT_API_SECRET: ${{ secrets.AMO_JWT_SECRET }}
+        run: pnpm sign
+
+      - name: Rename signed .xpi
+        run: |
+          shopt -s nullglob
+          files=(web-ext-artifacts/*.xpi)
+          if [ "${#files[@]}" -ne 1 ]; then
+            echo "expected exactly one signed .xpi, found ${#files[@]}" >&2
+            exit 1
+          fi
+          mv "${files[0]}" "web-ext-artifacts/riffado-connector-${GITHUB_REF_NAME#v}.xpi"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: riffado-connector
-          path: dist-zip/*.zip
+          path: web-ext-artifacts/*.xpi
 
       - name: Attach to GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist-zip/*.zip
+          files: web-ext-artifacts/*.xpi
           generate_release_notes: true
           fail_on_unmatched_files: true
-          # Sideload-only releases until the Chrome Web Store listing is
-          # live (icons + promo tile pending). Flip to false once the
-          # extension is published on CWS.
-          prerelease: true
