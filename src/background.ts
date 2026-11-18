@@ -118,8 +118,25 @@ function bridgeContentScript() {
     );
 }
 
+// Firefox's runtime.getManifest() returns content-script paths as absolute
+// `moz-extension://<uuid>/...` URLs (Chrome returns them as written), but
+// scripting.registerContentScripts only accepts paths relative to the add-on
+// root -- an absolute URL fails with "must be a relative URL" and the bridge
+// is never registered on self-hosted origins.
+function toExtensionRelativePath(file: string): string {
+    const root = chrome.runtime.getURL("");
+    if (file.startsWith(root)) return file.slice(root.length);
+    try {
+        const url = new URL(file);
+        if (url.protocol === "moz-extension:") return url.pathname.slice(1);
+    } catch {
+        // Already relative.
+    }
+    return file.replace(/^\//, "");
+}
+
 function bridgeScriptFiles(): string[] {
-    return bridgeContentScript()?.js ?? [];
+    return (bridgeContentScript()?.js ?? []).map(toExtensionRelativePath);
 }
 
 // Origins already covered by the static bridge declaration. Registering these

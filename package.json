@@ -1,6 +1,6 @@
 {
     "name": "riffado-connector",
-    "version": "0.3.0",
+    "version": "0.3.1",
     "description": "Firefox add-on that bridges your Plaud session to Riffado (self-hosted or hosted).",
     "private": true,
     "license": "AGPL-3.0",
